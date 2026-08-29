@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: wishly-backend
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 2 -b 0.0.0.0:$PORT app:app
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: "*"   # set this to your deployed frontend URL after step 2, e.g. https://your-app.vercel.app
+      - key: PYTHON_VERSION
+        value: 3.11.9
+    disk:
+      name: wishly-data
+      mountPath: /opt/render/project/src/backend
+      sizeGB: 1
