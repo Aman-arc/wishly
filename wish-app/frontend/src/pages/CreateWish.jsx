@@ -23,6 +23,8 @@ export default function CreateWish() {
   const [videos, setVideos] = useState([]);
   const [loading, setLoading] = useState(false);
   const [shareLink, setShareLink] = useState(null);
+  const [manageLink, setManageLink] = useState(null);
+  const [expiresAt, setExpiresAt] = useState(null);
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
 
@@ -50,6 +52,8 @@ export default function CreateWish() {
 
       const link = `${window.location.origin}/wish/${res.data.id}`;
       setShareLink(link);
+      setManageLink(`${window.location.origin}/wish/${res.data.id}/manage?token=${res.data.deleteToken}`);
+      setExpiresAt(res.data.expiresAt);
     } catch (err) {
       setError("Something went wrong while creating your wish. Please try again.");
       console.error(err);
@@ -66,12 +70,20 @@ export default function CreateWish() {
 
   function resetForm() {
     setShareLink(null);
+    setManageLink(null);
+    setExpiresAt(null);
     setTitle("");
     setMessage("");
     setSender("");
     setRecipient("");
     setPhotos([]);
     setVideos([]);
+  }
+
+  function formatExpiry(iso) {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
   }
 
   return (
@@ -187,6 +199,19 @@ export default function CreateWish() {
               <input type="text" readOnly value={shareLink} />
               <button onClick={copyLink}>{copied ? "Copied!" : "Copy"}</button>
             </div>
+            {expiresAt && (
+              <p className="expiry-note">
+                ⏳ This wish auto-deletes on <strong>{formatExpiry(expiresAt)}</strong>
+              </p>
+            )}
+            {manageLink && (
+              <p className="manage-note">
+                Want to delete it sooner? Save this private link:{" "}
+                <a href={manageLink}>{manageLink}</a>
+                <br />
+                <span className="manage-warning">This link is shown only once — save it now if you might need it.</span>
+              </p>
+            )}
             <div className="result-actions">
               <a href={shareLink} target="_blank" rel="noreferrer" className="preview-btn">
                 Preview Wish →

@@ -22,13 +22,21 @@ export default function ViewWish() {
   const [activePhoto, setActivePhoto] = useState(0);
   const [opened, setOpened] = useState(false);
   const [lightbox, setLightbox] = useState(null); // { type: 'image'|'video', src }
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const fired = useRef(false);
 
   useEffect(() => {
     api
       .get(`/api/wishes/${id}`)
       .then((res) => setWish(res.data))
-      .catch(() => setError("This wish couldn't be found. The link may be incorrect."));
+      .catch((err) => {
+        if (err?.response?.status === 410) {
+          setError("This wish has expired and is no longer available.");
+        } else {
+          setError("This wish couldn't be found. The link may be incorrect.");
+        }
+      });
   }, [id]);
 
   useEffect(() => {
@@ -56,6 +64,127 @@ export default function ViewWish() {
       if (Date.now() < end) requestAnimationFrame(frame);
     })();
     confetti({ particleCount: 120, spread: 100, origin: { y: 0.6 }, colors });
+  }
+
+  async function urlToDataUrl(url) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch ${url}`);
+    const blob = await res.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function buildStandaloneHtml({ title, message, sender, recipient, accent, emoji, photoDataUrls, videoDataUrls }) {
+    const photosHtml = photoDataUrls
+      .map((src) => `<img src="${src}" alt="Memory" style="width:100%;display:block;border-radius:16px;margin-bottom:16px;" />`)
+      .join("\n");
+    const videosHtml = videoDataUrls
+      .map((src) => `<video src="${src}" controls playsinline style="width:100%;border-radius:16px;margin-bottom:16px;"></video>`)
+      .join("\n");
+
+    return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>${escapeHtml(title)}</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Poppins, sans-serif;
+    background: radial-gradient(circle at top, ${accent}30, #fff5f8);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .card {
+    max-width: 620px;
+    width: 100%;
+    background: rgba(255,255,255,0.95);
+    border-radius: 28px;
+    padding: 40px 34px;
+    text-align: center;
+    box-shadow: 0 25px 70px rgba(0,0,0,0.12);
+  }
+  .to-line { color: #8d99ae; font-size: 0.95rem; margin-bottom: 4px; }
+  h1 {
+    font-size: 2.1rem;
+    font-weight: 800;
+    background: linear-gradient(90deg, ${accent}, #c77dff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 18px;
+  }
+  .message { font-size: 1.08rem; line-height: 1.7; color: #3a3d5c; margin: 22px 0; white-space: pre-wrap; }
+  .from-line { font-size: 1.4rem; font-style: italic; color: ${accent}; margin-bottom: 10px; }
+  .footer { font-size: 0.75rem; color: #c1c4d6; margin-top: 16px; }
+  .saved-note { font-size: 0.72rem; color: #c1c4d6; margin-top: 4px; }
+</style>
+</head>
+<body>
+  <div class="card">
+    ${recipient ? `<p class="to-line">To ${escapeHtml(recipient)}</p>` : ""}
+    <h1>${emoji} ${escapeHtml(title)}</h1>
+    ${photosHtml}
+    <p class="message">${escapeHtml(message)}</p>
+    ${videosHtml}
+    ${sender ? `<p class="from-line">With love, ${escapeHtml(sender)} 💌</p>` : ""}
+    <div class="footer">Made with Wishly ✨</div>
+    <div class="saved-note">Saved on ${new Date().toLocaleDateString()} — this is a permanent offline copy.</div>
+  </div>
+</body>
+</html>`;
+  }
+
+  async function handleSaveWish() {
+    setSaving(true);
+    setSaveError("");
+    try {
+      const photoDataUrls = await Promise.all(wish.photos.map((p) => urlToDataUrl(mediaUrl(p))));
+      const videoDataUrls = await Promise.all(wish.videos.map((v) => urlToDataUrl(mediaUrl(v))));
+
+      const html = buildStandaloneHtml({
+        title: wish.title,
+        message: wish.message,
+        sender: wish.sender,
+        recipient: wish.recipient,
+        accent: wish.themeColor || "#ff6b9d",
+        emoji: OCCASION_EMOJI[wish.occasion] || "✨",
+        photoDataUrls,
+        videoDataUrls,
+      });
+
+      const blob = new Blob([html], { type: "text/html" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(wish.title || "wish").replace(/[^a-z0-9]+/gi, "_").toLowerCase()}.html`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      setSaveError("Couldn't save this wish right now — please try again.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   if (error) {
@@ -150,6 +279,12 @@ export default function ViewWish() {
         )}
 
         {wish.sender && <p className="from-line">With love, {wish.sender} 💌</p>}
+
+        <button className="save-btn" onClick={handleSaveWish} disabled={saving}>
+          {saving ? "Preparing your download..." : "💾 Save this wish"}
+        </button>
+        {saveError && <p className="error-text">{saveError}</p>}
+        <p className="save-hint">Downloads a permanent copy you can open anytime, even offline.</p>
 
         <div className="footer-tag">Made with Wishly ✨</div>
       </div>

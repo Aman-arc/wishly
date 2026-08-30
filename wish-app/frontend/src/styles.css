@@ -237,6 +237,35 @@ textarea:focus {
   cursor: pointer;
 }
 
+.expiry-note {
+  font-size: 0.8rem;
+  color: #8d99ae;
+  margin-top: 14px;
+}
+
+.manage-note {
+  font-size: 0.78rem;
+  color: #8d99ae;
+  margin-top: 10px;
+  word-break: break-all;
+  background: #faf9fb;
+  border: 1px solid #eee;
+  border-radius: 12px;
+  padding: 10px 12px;
+}
+
+.manage-note a {
+  color: var(--accent, #ff6b9d);
+  font-weight: 600;
+}
+
+.manage-warning {
+  color: #e63946;
+  font-weight: 600;
+  display: inline-block;
+  margin-top: 4px;
+}
+
 .result-actions {
   display: flex;
   gap: 10px;
@@ -495,6 +524,34 @@ textarea:focus {
   font-size: 0.75rem;
   color: #c1c4d6;
   margin-top: 10px;
+}
+
+.save-btn {
+  border: 1.5px solid var(--accent, #ff6b9d);
+  background: white;
+  color: var(--accent, #ff6b9d);
+  padding: 10px 20px;
+  border-radius: 12px;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  margin-top: 10px;
+  transition: background 0.15s;
+}
+
+.save-btn:hover {
+  background: color-mix(in srgb, var(--accent, #ff6b9d) 10%, white);
+}
+
+.save-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.save-hint {
+  font-size: 0.72rem;
+  color: #b7bccb;
+  margin-top: 6px;
 }
 
 /* ---------------- Loading / Not found ---------------- */
