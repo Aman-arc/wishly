@@ -1,28 +1,60 @@
 import os
-import sqlite3
 import uuid
 import json
+from urllib.parse import urlparse
 from flask import Flask, request, jsonify, send_from_directory, g
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
-DB_PATH = os.path.join(BASE_DIR, "wishes.db")
+LOCAL_UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
+LOCAL_DB_PATH = os.path.join(BASE_DIR, "wishes.db")
 
 ALLOWED_IMAGE_EXT = {"png", "jpg", "jpeg", "gif", "webp"}
 ALLOWED_VIDEO_EXT = {"mp4", "webm", "mov", "ogg"}
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+os.makedirs(LOCAL_UPLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
-# In production set ALLOWED_ORIGINS to your deployed frontend URL, e.g.
-# ALLOWED_ORIGINS=https://your-app.vercel.app
 allowed_origins = os.environ.get("ALLOWED_ORIGINS", "*")
 CORS(app, origins=allowed_origins.split(",") if allowed_origins != "*" else "*")
 
 app.config["MAX_CONTENT_LENGTH"] = 150 * 1024 * 1024  # 150 MB total upload limit
+
+# ---------------------------------------------------------------------------
+# Storage mode detection
+#   - DATABASE_URL set   -> use Postgres (Render's managed database)
+#   - not set            -> use local SQLite file (good for local dev)
+#   - R2 env vars set    -> upload media to Cloudflare R2 (durable, survives redeploys)
+#   - not set            -> save media to local disk (good for local dev)
+# ---------------------------------------------------------------------------
+DATABASE_URL = os.environ.get("DATABASE_URL")
+USE_POSTGRES = bool(DATABASE_URL)
+
+R2_ACCOUNT_ID = os.environ.get("R2_ACCOUNT_ID")
+R2_ACCESS_KEY_ID = os.environ.get("R2_ACCESS_KEY_ID")
+R2_SECRET_ACCESS_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
+R2_BUCKET_NAME = os.environ.get("R2_BUCKET_NAME")
+R2_PUBLIC_URL = os.environ.get("R2_PUBLIC_URL")  # e.g. https://media.yourdomain.com or the r2.dev URL
+USE_R2 = all([R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_PUBLIC_URL])
+
+if USE_POSTGRES:
+    import psycopg2
+    import psycopg2.extras
+
+if USE_R2:
+    import boto3
+    from botocore.config import Config
+
+    r2_client = boto3.client(
+        "s3",
+        endpoint_url=f"https://{R2_ACCOUNT_ID}.r2.cloudflarestorage.com",
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
 
 # ---------------------------------------------------------------------------
 # Default generic messages used when the user leaves the message blank
@@ -52,13 +84,24 @@ DEFAULT_TITLES = {
 }
 
 
+def allowed_file(filename, allowed_ext):
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_ext
+
+
 # ---------------------------------------------------------------------------
-# SQLite helpers
+# Database layer — Postgres in production, SQLite for local dev.
+# Both are accessed through the same small set of functions below so the
+# rest of the app doesn't need to care which one is active.
 # ---------------------------------------------------------------------------
 def get_db():
     if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
+        if USE_POSTGRES:
+            g.db = psycopg2.connect(DATABASE_URL, sslmode="require")
+        else:
+            import sqlite3
+
+            g.db = sqlite3.connect(LOCAL_DB_PATH)
+            g.db.row_factory = sqlite3.Row
     return g.db
 
 
@@ -70,32 +113,102 @@ def close_db(exception=None):
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS wishes (
-            id TEXT PRIMARY KEY,
-            occasion TEXT NOT NULL,
-            title TEXT NOT NULL,
-            message TEXT NOT NULL,
-            sender TEXT,
-            recipient TEXT,
-            theme_color TEXT,
-            photos TEXT NOT NULL DEFAULT '[]',
-            videos TEXT NOT NULL DEFAULT '[]',
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    if USE_POSTGRES:
+        conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wishes (
+                id TEXT PRIMARY KEY,
+                occasion TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                sender TEXT,
+                recipient TEXT,
+                theme_color TEXT,
+                photos TEXT NOT NULL DEFAULT '[]',
+                videos TEXT NOT NULL DEFAULT '[]',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
         )
-        """
-    )
-    conn.commit()
-    conn.close()
+        conn.commit()
+        cur.close()
+        conn.close()
+    else:
+        import sqlite3
+
+        conn = sqlite3.connect(LOCAL_DB_PATH)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS wishes (
+                id TEXT PRIMARY KEY,
+                occasion TEXT NOT NULL,
+                title TEXT NOT NULL,
+                message TEXT NOT NULL,
+                sender TEXT,
+                recipient TEXT,
+                theme_color TEXT,
+                photos TEXT NOT NULL DEFAULT '[]',
+                videos TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.commit()
+        conn.close()
 
 
 init_db()
 
 
-def allowed_file(filename, allowed_ext):
-    return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_ext
+def insert_wish(wish_id, occasion, title, message, sender, recipient, theme_color, photos, videos):
+    db = get_db()
+    placeholder = "%s" if USE_POSTGRES else "?"
+    query = f"""
+        INSERT INTO wishes (id, occasion, title, message, sender, recipient, theme_color, photos, videos)
+        VALUES ({placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder}, {placeholder})
+    """
+    cur = db.cursor()
+    cur.execute(
+        query,
+        (wish_id, occasion, title, message, sender, recipient, theme_color, json.dumps(photos), json.dumps(videos)),
+    )
+    db.commit()
+    cur.close()
+
+
+def fetch_wish(wish_id):
+    db = get_db()
+    placeholder = "%s" if USE_POSTGRES else "?"
+    cur = db.cursor()
+    cur.execute(f"SELECT * FROM wishes WHERE id = {placeholder}", (wish_id,))
+    row = cur.fetchone()
+    cur.close()
+    if row is None:
+        return None
+    if USE_POSTGRES:
+        cols = ["id", "occasion", "title", "message", "sender", "recipient", "theme_color", "photos", "videos", "created_at"]
+        return dict(zip(cols, row))
+    else:
+        return dict(row)
+
+
+# ---------------------------------------------------------------------------
+# Media storage layer — Cloudflare R2 in production, local disk for dev.
+# ---------------------------------------------------------------------------
+def save_media_file(file, wish_id, unique_name):
+    """Saves a file either to R2 (returns a full public URL) or locally
+    (returns a relative path served by /uploads/...)."""
+    if USE_R2:
+        key = f"{wish_id}/{unique_name}"
+        r2_client.upload_fileobj(file, R2_BUCKET_NAME, key)
+        return f"{R2_PUBLIC_URL.rstrip('/')}/{key}"
+    else:
+        wish_folder = os.path.join(LOCAL_UPLOAD_DIR, wish_id)
+        os.makedirs(wish_folder, exist_ok=True)
+        file.save(os.path.join(wish_folder, unique_name))
+        return f"/uploads/{wish_id}/{unique_name}"
 
 
 # ---------------------------------------------------------------------------
@@ -119,8 +232,6 @@ def create_wish():
         title = DEFAULT_TITLES.get(occasion, DEFAULT_TITLES["other"])
 
     wish_id = uuid.uuid4().hex[:10]
-    wish_folder = os.path.join(UPLOAD_DIR, wish_id)
-    os.makedirs(wish_folder, exist_ok=True)
 
     photos, videos = [], []
 
@@ -128,43 +239,24 @@ def create_wish():
         if file and file.filename and allowed_file(file.filename, ALLOWED_IMAGE_EXT):
             fname = secure_filename(file.filename)
             unique_name = f"{uuid.uuid4().hex[:6]}_{fname}"
-            file.save(os.path.join(wish_folder, unique_name))
-            photos.append(unique_name)
+            url = save_media_file(file, wish_id, unique_name)
+            photos.append(url)
 
     for file in request.files.getlist("videos"):
         if file and file.filename and allowed_file(file.filename, ALLOWED_VIDEO_EXT):
             fname = secure_filename(file.filename)
             unique_name = f"{uuid.uuid4().hex[:6]}_{fname}"
-            file.save(os.path.join(wish_folder, unique_name))
-            videos.append(unique_name)
+            url = save_media_file(file, wish_id, unique_name)
+            videos.append(url)
 
-    db = get_db()
-    db.execute(
-        """
-        INSERT INTO wishes (id, occasion, title, message, sender, recipient, theme_color, photos, videos)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            wish_id,
-            occasion,
-            title,
-            message,
-            sender,
-            recipient,
-            theme_color,
-            json.dumps(photos),
-            json.dumps(videos),
-        ),
-    )
-    db.commit()
+    insert_wish(wish_id, occasion, title, message, sender, recipient, theme_color, photos, videos)
 
     return jsonify({"id": wish_id}), 201
 
 
 @app.route("/api/wishes/<wish_id>", methods=["GET"])
 def get_wish(wish_id):
-    db = get_db()
-    row = db.execute("SELECT * FROM wishes WHERE id = ?", (wish_id,)).fetchone()
+    row = fetch_wish(wish_id)
     if not row:
         return jsonify({"error": "Wish not found"}), 404
 
@@ -179,20 +271,31 @@ def get_wish(wish_id):
             "sender": row["sender"],
             "recipient": row["recipient"],
             "themeColor": row["theme_color"],
-            "photos": [f"/uploads/{wish_id}/{p}" for p in photos],
-            "videos": [f"/uploads/{wish_id}/{v}" for v in videos],
+            # Stored values are already full URLs when using R2, or relative
+            # paths (starting with /uploads/...) when using local disk.
+            "photos": photos,
+            "videos": videos,
         }
     )
 
 
 @app.route("/uploads/<wish_id>/<filename>")
 def serve_upload(wish_id, filename):
-    return send_from_directory(os.path.join(UPLOAD_DIR, wish_id), filename)
+    # Only used in local-dev mode (USE_R2 is False). In production with R2,
+    # media is served directly from R2's public URL instead.
+    return send_from_directory(os.path.join(LOCAL_UPLOAD_DIR, wish_id), filename)
 
 
 @app.route("/")
 def health():
-    return jsonify({"status": "ok", "message": "Wish App API is running"})
+    return jsonify(
+        {
+            "status": "ok",
+            "message": "Wish App API is running",
+            "storage": "postgres" if USE_POSTGRES else "sqlite",
+            "media": "r2" if USE_R2 else "local-disk",
+        }
+    )
 
 
 if __name__ == "__main__":
