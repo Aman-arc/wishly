@@ -390,8 +390,7 @@ textarea:focus {
 
 .photo-carousel img {
   width: 100%;
-  max-height: 380px;
-  object-fit: cover;
+  height: auto;
   display: block;
   transition: opacity 0.4s ease;
 }
@@ -432,8 +431,8 @@ textarea:focus {
 
 .video-grid video {
   width: 100%;
+  height: auto;
   border-radius: 16px;
-  max-height: 360px;
 }
 
 .from-line {
