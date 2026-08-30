@@ -21,6 +21,7 @@ export default function ViewWish() {
   const [error, setError] = useState("");
   const [activePhoto, setActivePhoto] = useState(0);
   const [opened, setOpened] = useState(false);
+  const [lightbox, setLightbox] = useState(null); // { type: 'image'|'video', src }
   const fired = useRef(false);
 
   useEffect(() => {
@@ -110,7 +111,11 @@ export default function ViewWish() {
 
         {wish.photos.length > 0 && (
           <div className="photo-carousel">
-            <img src={mediaUrl(wish.photos[activePhoto])} alt="Memory" />
+            <img
+              src={mediaUrl(wish.photos[activePhoto])}
+              alt="Memory"
+              onClick={() => setLightbox({ type: "image", src: mediaUrl(wish.photos[activePhoto]) })}
+            />
             {wish.photos.length > 1 && (
               <div className="dots">
                 {wish.photos.map((_, i) => (
@@ -130,7 +135,16 @@ export default function ViewWish() {
         {wish.videos.length > 0 && (
           <div className="video-grid">
             {wish.videos.map((v, i) => (
-              <video key={i} src={mediaUrl(v)} controls playsInline />
+              <video
+                key={i}
+                src={mediaUrl(v)}
+                controls
+                playsInline
+                onClick={(e) => {
+                  e.preventDefault();
+                  setLightbox({ type: "video", src: mediaUrl(v) });
+                }}
+              />
             ))}
           </div>
         )}
@@ -139,6 +153,19 @@ export default function ViewWish() {
 
         <div className="footer-tag">Made with Wishly ✨</div>
       </div>
+
+      {lightbox && (
+        <div className="lightbox-overlay" onClick={() => setLightbox(null)}>
+          <button className="lightbox-close" onClick={() => setLightbox(null)}>
+            ✕
+          </button>
+          {lightbox.type === "image" ? (
+            <img src={lightbox.src} alt="Full size" onClick={(e) => e.stopPropagation()} />
+          ) : (
+            <video src={lightbox.src} controls autoPlay playsInline onClick={(e) => e.stopPropagation()} />
+          )}
+        </div>
+      )}
     </div>
   );
 }
