@@ -1,8 +1,10 @@
 import os
 import uuid
 import json
+import base64
+import mimetypes
 from datetime import datetime, timedelta, timezone
-from flask import Flask, request, jsonify, send_from_directory, g
+from flask import Flask, request, jsonify, send_from_directory, g, Response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -371,6 +373,152 @@ def get_wish(wish_id):
             "videos": videos,
             "expiresAt": row["expires_at"],
         }
+    )
+
+
+OCCASION_EMOJI = {
+    "birthday": "🎂",
+    "anniversary": "💍",
+    "congratulations": "🎉",
+    "wedding": "💐",
+    "graduation": "🎓",
+    "farewell": "👋",
+    "getwellsoon": "💐",
+    "newborn": "👶",
+    "other": "✨",
+}
+
+
+def escape_html(s):
+    if not s:
+        return ""
+    return (
+        s.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def fetch_media_as_data_url(url):
+    """Fetches a photo/video's bytes directly (from R2 via the S3 API, or
+    from local disk) and returns a base64 data: URL — done server-side so
+    there's no CORS involved and no dependency on the browser fetching a
+    third-party domain."""
+    if USE_R2:
+        key = url.replace(R2_PUBLIC_URL.rstrip("/") + "/", "")
+        obj = r2_client.get_object(Bucket=R2_BUCKET_NAME, Key=key)
+        content_type = obj.get("ContentType") or mimetypes.guess_type(key)[0] or "application/octet-stream"
+        data = obj["Body"].read()
+    else:
+        # url looks like /uploads/<wish_id>/<filename>
+        rel_path = url.lstrip("/").replace("uploads/", "", 1)
+        file_path = os.path.join(LOCAL_UPLOAD_DIR, rel_path)
+        content_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
+        with open(file_path, "rb") as f:
+            data = f.read()
+
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"data:{content_type};base64,{b64}"
+
+
+def build_standalone_html(row):
+    photos = json.loads(row["photos"])
+    videos = json.loads(row["videos"])
+
+    photo_data_urls = [fetch_media_as_data_url(p) for p in photos]
+    video_data_urls = [fetch_media_as_data_url(v) for v in videos]
+
+    accent = row["theme_color"] or "#ff6b9d"
+    emoji = OCCASION_EMOJI.get(row["occasion"], "✨")
+    title = escape_html(row["title"])
+    message = escape_html(row["message"])
+    sender = escape_html(row["sender"])
+    recipient = escape_html(row["recipient"])
+
+    photos_html = "\n".join(
+        f'<img src="{src}" alt="Memory" style="width:100%;display:block;border-radius:16px;margin-bottom:16px;" />'
+        for src in photo_data_urls
+    )
+    videos_html = "\n".join(
+        f'<video src="{src}" controls playsinline style="width:100%;border-radius:16px;margin-bottom:16px;"></video>'
+        for src in video_data_urls
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>{title}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Poppins, sans-serif;
+    background: radial-gradient(circle at top, {accent}30, #fff5f8);
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }}
+  .card {{
+    max-width: 620px;
+    width: 100%;
+    background: rgba(255,255,255,0.95);
+    border-radius: 28px;
+    padding: 40px 34px;
+    text-align: center;
+    box-shadow: 0 25px 70px rgba(0,0,0,0.12);
+  }}
+  .to-line {{ color: #8d99ae; font-size: 0.95rem; margin-bottom: 4px; }}
+  h1 {{
+    font-size: 2.1rem;
+    font-weight: 800;
+    background: linear-gradient(90deg, {accent}, #c77dff);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    margin-bottom: 18px;
+  }}
+  .message {{ font-size: 1.08rem; line-height: 1.7; color: #3a3d5c; margin: 22px 0; white-space: pre-wrap; }}
+  .from-line {{ font-size: 1.4rem; font-style: italic; color: {accent}; margin-bottom: 10px; }}
+  .footer {{ font-size: 0.75rem; color: #c1c4d6; margin-top: 16px; }}
+  .saved-note {{ font-size: 0.72rem; color: #c1c4d6; margin-top: 4px; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    {f'<p class="to-line">To {recipient}</p>' if recipient else ''}
+    <h1>{emoji} {title}</h1>
+    {photos_html}
+    <p class="message">{message}</p>
+    {videos_html}
+    {f'<p class="from-line">With love, {sender} 💌</p>' if sender else ''}
+    <div class="footer">Made with Wishly ✨</div>
+    <div class="saved-note">Saved on {datetime.now().strftime('%Y-%m-%d')} — this is a permanent offline copy.</div>
+  </div>
+</body>
+</html>"""
+
+
+@app.route("/api/wishes/<wish_id>/download", methods=["GET"])
+def download_wish(wish_id):
+    row = fetch_wish_row(wish_id)
+    if not row:
+        return jsonify({"error": "Wish not found"}), 404
+
+    if is_expired(row):
+        delete_wish_completely(wish_id, row)
+        return jsonify({"error": "This wish has expired"}), 410
+
+    html = build_standalone_html(row)
+    safe_name = "".join(c if c.isalnum() else "_" for c in (row["title"] or "wish")).lower()
+
+    return Response(
+        html,
+        mimetype="text/html",
+        headers={"Content-Disposition": f'attachment; filename="{safe_name}.html"'},
     )
 
 

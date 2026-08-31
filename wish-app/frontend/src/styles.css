@@ -527,6 +527,8 @@ textarea:focus {
 }
 
 .save-btn {
+  display: inline-block;
+  text-decoration: none;
   border: 1.5px solid var(--accent, #ff6b9d);
   background: white;
   color: var(--accent, #ff6b9d);
