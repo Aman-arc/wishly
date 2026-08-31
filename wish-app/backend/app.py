@@ -276,7 +276,13 @@ def delete_wish_completely(wish_id, row):
 def save_media_file(file, wish_id, unique_name):
     if USE_R2:
         key = f"{wish_id}/{unique_name}"
-        r2_client.upload_fileobj(file, R2_BUCKET_NAME, key)
+        content_type = file.mimetype or "application/octet-stream"
+        r2_client.upload_fileobj(
+            file,
+            R2_BUCKET_NAME,
+            key,
+            ExtraArgs={"ContentType": content_type},
+        )
         return f"{R2_PUBLIC_URL.rstrip('/')}/{key}"
     else:
         wish_folder = os.path.join(LOCAL_UPLOAD_DIR, wish_id)
